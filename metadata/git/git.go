@@ -43,6 +43,7 @@ import (
 // GitMetadata is a struct that represents the metadata of a git repository.
 // It has fields for size, path, timestamp, and commits.
 type GitMetadata struct {
+	URL          string
 	LatestCommit string
 }
 
@@ -56,7 +57,8 @@ func (m GitMetadata) GetLatestCommit() string {
 	return m.LatestCommit
 }
 
-func (m GitMetadata) GetPinnedURL(u string) (string, error) {
+func (m GitMetadata) GetPinnedURL() (string, error) {
+	u := m.URL
 	if len(u) == 0 {
 		return "", fmt.Errorf("empty URL")
 	}
@@ -70,4 +72,8 @@ func (m GitMetadata) GetPinnedURL(u string) (string, error) {
 		u = strings.Replace(strings.Split(u, "git@")[1], ":", "/", 1)
 	}
 	return "git::" + strings.SplitN(u, "?ref=", 2)[0] + "?ref=" + m.LatestCommit, nil
+}
+
+func (m GitMetadata) RemoteRef() string {
+	return ""
 }

@@ -22,6 +22,7 @@ import (
 )
 
 type OCIMetadata struct {
+	URL    string
 	Digest string
 }
 
@@ -36,7 +37,8 @@ func (o OCIMetadata) GetDigest() string {
 	return o.Digest
 }
 
-func (o OCIMetadata) GetPinnedURL(u string) (string, error) {
+func (o OCIMetadata) GetPinnedURL() (string, error) {
+	u := o.URL
 	if len(u) == 0 {
 		return "", fmt.Errorf("empty URL")
 	}
@@ -51,4 +53,8 @@ func (o OCIMetadata) GetPinnedURL(u string) (string, error) {
 		u = parts[0]
 	}
 	return fmt.Sprintf("oci::%s@%s", u, o.Digest), nil
+}
+
+func (o OCIMetadata) RemoteRef() string {
+	return ""
 }
