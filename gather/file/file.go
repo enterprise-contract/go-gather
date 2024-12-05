@@ -1,279 +1,175 @@
-// Copyright The Enterprise Contract Contributors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// SPDX-License-Identifier: Apache-2.0
-
-// Package file provides functionality for copying files and directories.
-// It includes a FileGatherer struct that implements the Gatherer interface
-// and provides methods for gathering files and directories.
 package file
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
-	utils "github.com/enterprise-contract/go-gather"
-	"github.com/enterprise-contract/go-gather/expander"
+	"github.com/enterprise-contract/go-gather/expand"
+	"github.com/enterprise-contract/go-gather/gather"
+	"github.com/enterprise-contract/go-gather/internal/helpers"
 	"github.com/enterprise-contract/go-gather/metadata"
-	"github.com/enterprise-contract/go-gather/metadata/file"
-	"github.com/enterprise-contract/go-gather/saver"
 )
 
-// FileGatherer is a struct that implements the Gatherer interface
-// and provides methods for gathering files and directories.
 type FileGatherer struct{}
 
-// Gather copies a file or directory from the source path to the destination path.
-// It returns the metadata of the gathered file or directory and any error encountered.
-func (f *FileGatherer) Gather(ctx context.Context, source, destination string) (metadata.Metadata, error) {
-	source = strings.TrimPrefix(source, "file::")
-
-	// Parse the source URI
-	src, err := url.Parse(source)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse source URI: %w", err)
-	}
-
-	// Determine if we have a file or directory
-	sourceKind, err := os.Stat(src.Path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to determine source kind: %w", err)
-	}
-
-	// Determine if we have a tar file as the src. If so, we need to untar it.
-	if strings.HasSuffix(src.Path, ".tar") {
-		dst, err := url.Parse(destination)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse destination URI: %w", err)
-		}
-
-		t := &expander.TarExpander{
-			FilesLimit:    0,
-			FileSizeLimit: 0,
-		}
-
-		err = t.Expand(dst.Path, src.Path, true, 0755)
-		if err != nil {
-			return nil, fmt.Errorf("failed to expand tar file: %w", err)
-		}
-
-		info, err := os.Stat(destination)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get file info: %w", err)
-		}
-
-		return &file.FileMetadata{
-			Size:      info.Size(),
-			Path:      destination,
-			Timestamp: info.ModTime(),
-		}, nil
-	}
-
-	// If it's a directory, call copyDirectory, otherwise call copyFile
-	if sourceKind.IsDir() {
-		return f.copyDirectory(ctx, src.Path, destination)
-	} else {
-		return f.copyFile(ctx, src.Path, destination)
-	}
+type FSMetadata struct {
+	Path      string
+	Size      int64
+	Timestamp string
 }
 
-func (f *FileGatherer) copyFile(ctx context.Context, source, destination string) (metadata.Metadata, error) {
-	src, err := url.Parse(source)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse source URI: %w", err)
+type FileSaver struct {
+	FSMetadata
+}
+
+func (f *FileGatherer) Matcher(uri string) bool {
+	prefixes := []string{"file://", "file::", "/", "./", "../"}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(uri, prefix) {
+			return true
+		}
 	}
+	return false
+}
+
+func (f *FileGatherer) Gather(ctx context.Context, src, dst string) (metadata.Metadata, error) {
 	select {
 	case <-ctx.Done():
-		return nil, fmt.Errorf("error copying file: %w", ctx.Err())
+		return nil, ctx.Err()
 	default:
 	}
 
-	// Open the source file.
-	srcFile, err := os.Open(filepath.Clean(src.Path))
+	// Remove the file:: prefix if it exists
+	src = strings.TrimPrefix(src, "file::")
+
+	// Parse the source URI
+	parsedSrc, err := url.Parse(src)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open source file: %w", err)
+		return nil, fmt.Errorf("failed to parse source URI: %w", err)
 	}
-	defer srcFile.Close()
 
-	// Classify the destination to ensure no problems with the path.
-	destType, err := utils.ClassifyURI(destination)
+	// Expand the source path
+	src, err = helpers.ExpandTilde(parsedSrc.Path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to classify destination URI: %w", err)
-	}
-	if destType == utils.Unknown {
-		return nil, fmt.Errorf("failed to parse destination URI: parse \"%s\": unknown protocol scheme", destination)
-	}
-	if destType != utils.FileURI {
-		return nil, fmt.Errorf("destination URI is not a file")
+		return nil, fmt.Errorf("failed to expand source path: %w", err)
 	}
 
-	// Parse the destination URI.
-	destFile, err := url.Parse(destination)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse destination URI: %w", err)
+	// Check if the source exists
+	if _, err := os.Stat(src); os.IsNotExist(err) {
+		return nil, fmt.Errorf("source file does not exist: %w", err)
 	}
 
-	// Create the appropriate Saver to handle storing the data.
-	saver, err := saver.NewSaver("file")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create saver: %w", err)
+	// Check if the source is a directory, if so we copy the entire
+	// directory to the destination and return metadata.
+	if helpers.IsDir(src) {
+		if err := helpers.CopyDir(src, dst); err != nil {
+			return nil, fmt.Errorf("failed to copy directory: %w", err)
+		}
+		dirSize, err := helpers.GetDirectorySize(dst)
+		if err != nil {
+			return nil, err
+		}
+
+		return &FSMetadata{
+			Path: 	dst,
+			Size: 	dirSize,
+			Timestamp: time.Now().String(),
+		}, nil
 	}
 
-	// Save the file to the destination.
-	if err := saver.Save(ctx, srcFile, destination); err != nil {
-		return nil, fmt.Errorf("failed to save file: %w", err)
+	// Check if our source is a compressed file.
+	if !helpers.IsDir(src) {
+		if ok, e, err := expand.IsCompressedFile(src); ok && err == nil {
+			err := e.Expand(ctx, src, dst, true, 0755)
+			if err != nil {
+				return nil, err
+			}
+			dirSize, err := helpers.GetDirectorySize(dst)
+			if err != nil {
+				return nil, err
+			}
+	
+			fm := &FSMetadata{
+				Path:      dst,
+				Size:      dirSize,
+				Timestamp: time.Now().String(),
+			}
+			return fm, err
+		} else if err != nil {
+			return nil, fmt.Errorf("failed to determine if source is a compressed file: %w", err)
+		}
 	}
 
-	// Get the file info
-	info, err := os.Stat(destFile.Path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get file info: %w", err)
-	}
-
-	// Calculate the SHA256 hash of the file
-	fileSha, err := getFileSha(destFile.Path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to calculate file SHA: %w", err)
-	}
-
-	return &file.FileMetadata{
-		Size:      info.Size(),
-		Path:      destination,
-		Timestamp: info.ModTime(),
-		SHA:       fileSha,
-	}, nil
+	// Todo: Figure out how to make this flexible for more savers
+	fsaver := FileSaver{}
+	return fsaver.save(ctx, src, dst, false)
 }
 
-// copyDirectory copies a directory from the source path to the destination path.
-// It walks through the directory tree, creates the corresponding directories in the destination path,
-// and copies each file in the directory to the destination path.
-// It limits the number of concurrent operations to 10 to avoid overwhelming system resources.
-// It returns the metadata of the copied directory and any error encountered.
-func (f *FileGatherer) copyDirectory(ctx context.Context, source, destination string) (metadata.Metadata, error) {
+func (f *FSMetadata) Get() interface{} {
+	return f
+}
+
+// save copies from a filesystem source to a filesystem destination. 
+// If append is true, the file will be appended to the destination.
+func (f *FileSaver) save(ctx context.Context, source string, destination string, append bool) (metadata.Metadata, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	var dstFile *os.File
+	var err error
+
 	src, err := url.Parse(source)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse source URI: %w", err)
 	}
+
+	// Check that the src file exists
+	if _, err := os.Stat(src.Path); os.IsNotExist(err) {
+		return nil, fmt.Errorf("source file does not exist: %w", err)
+	}
+
 	dst, err := url.Parse(destination)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse destination URI: %w", err)
 	}
 
-	errChan := make(chan error, 100) // Increased buffer size
-	done := make(chan bool)
-	semaphore := make(chan struct{}, 10) // Limit to 10 concurrent operations
-
-	var wg sync.WaitGroup // Using a WaitGroup to manage concurrency
-
-	go func() {
-		defer close(done)
-		err = filepath.Walk(src.Path, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				return fmt.Errorf("failed to walk path: %w", err)
-			}
-
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-
-			relPath, err := filepath.Rel(src.Path, path)
-			if err != nil {
-				return fmt.Errorf("failed to get relative path: %w", err)
-			}
-
-			destPath := filepath.Join(dst.Path, relPath)
-			if info.IsDir() {
-				if err := os.MkdirAll(destPath, 0755); err != nil {
-					return fmt.Errorf("failed to create directory: %w", err)
-				}
-			} else {
-				semaphore <- struct{}{}
-				wg.Add(1)
-				go func() {
-					defer func() {
-						<-semaphore
-						wg.Done()
-					}()
-					srcFile, err := os.Open(filepath.Clean(path))
-					if err != nil {
-						errChan <- err
-						return
-					}
-					defer srcFile.Close()
-
-					saver, err := saver.NewSaver("file")
-					if err != nil {
-						errChan <- err
-						return
-					}
-
-					if err := saver.Save(ctx, srcFile, destPath); err != nil {
-						errChan <- err
-						return
-					}
-				}()
-			}
-			return nil
-		})
-		if err != nil {
-			errChan <- err
-		}
-
-		wg.Wait()      // Wait for all goroutines to finish
-		close(errChan) // Close the channel safely after all sends are done
-	}()
-
-	// Handle errors and completion
-	for err := range errChan {
-		if err != nil {
-			return nil, fmt.Errorf("failed to copy directory: %w", err)
-		}
+	if append {
+		dstFile, err = os.OpenFile(dst.Path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0755)
+	} else {
+		dstFile, err = os.Create(dst.Path)
 	}
-	<-done
-	return &file.DirectoryMetadata{
+	if err != nil {
+		return nil, fmt.Errorf("failed to create file: %w", err)
+	}
+	defer dstFile.Close()
+
+	// Create a reader for the source file
+	srcFile, err := os.Open(src.Path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open source file: %w", err)
+	}
+	defer srcFile.Close()
+
+	_, err = io.Copy(dstFile, srcFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to write to file: %w", err)
+	}
+
+	return &FSMetadata{
 		Path:      dst.Path,
-		Timestamp: time.Now(),
+		Size:      f.Size,
+		Timestamp: f.Timestamp,
 	}, nil
 }
 
-// getFileSha calculates the SHA256 hash of a file located at the given path.
-// It returns the hexadecimal representation of the hash and any error encountered.
-// If the file cannot be opened or an error occurs while calculating the hash, an empty string and the error are returned.
-// The file is closed before returning.
-func getFileSha(path string) (string, error) {
-	file, err := os.Open(filepath.Clean(path))
-	if err != nil {
-		return "", fmt.Errorf("failed to open file: %w", err)
-	}
-	defer file.Close()
-
-	hasher := sha256.New()
-	if _, err := io.Copy(hasher, file); err != nil {
-		return "", fmt.Errorf("failed to calculate file SHA: %w", err)
-	}
-
-	return hex.EncodeToString(hasher.Sum(nil)), nil
+func init() {
+	gather.RegisterGatherer(&FileGatherer{})
 }

@@ -1,29 +1,80 @@
-// Copyright The Enterprise Contract Contributors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// SPDX-License-Identifier: Apache-2.0
-
-package expander
+package tar
 
 import (
-	"archive/tar"
+	"compress/bzip2"
+	"compress/gzip"
+	"context"
 	"fmt"
+	"github.com/google/safearchive/tar"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+
+	"github.com/enterprise-contract/go-gather/expand"
+	"github.com/enterprise-contract/go-gather/internal/helpers"
 )
+
+type TarExpander struct {
+	FileSizeLimit int64
+	FilesLimit    int
+}
+
+func (t *TarExpander) Expand(ctx context.Context, src, dst string, dir bool, umask os.FileMode) error {
+	input, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("failed to open source file: %s", src)
+	}
+	defer input.Close()
+
+	if strings.Contains(src, "tar.gz") || strings.Contains(src, "tgz") {
+		if err = extractTarGz(input, dst, dir, umask, t.FileSizeLimit, t.FilesLimit); err != nil {
+			return fmt.Errorf("failed to extract tar.gz file: %s", err)
+		}
+	} else if strings.Contains(src, "tar.bz2") || strings.Contains(src, "tbz2") {
+		if err = extractTarBz(input, dst, dir, umask, t.FileSizeLimit, t.FilesLimit); err != nil {
+			return fmt.Errorf("failed to extract tar.bz2 file: %s", err)
+		}
+	} else {
+		if err = untar(input, dst, src, dir, umask, t.FileSizeLimit, t.FilesLimit); err != nil {
+			return fmt.Errorf("failed to untar file: %s", err)
+		}
+	}
+
+	if err != nil {
+		return fmt.Errorf("failed to get destination directory size: %s", dst)
+	}
+
+	return nil
+}
+
+func (t *TarExpander) Matcher(fileName string) bool {
+	extensions := []string{"tar", "tgz", "tbz2"}
+	for _, ext := range extensions {
+		if strings.Contains(fileName, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+// extractTarBz is a helper function that extracts a tarball compressed with bzip2 to a destination directory
+func extractTarBz(input io.Reader, dst string, dir bool, umask os.FileMode, fileSizeLimit int64, filesLimit int) error {
+	bzr := bzip2.NewReader(input)
+	return untar(bzr, dst, "", dir, umask, fileSizeLimit, filesLimit)
+}
+
+// extractTarGz is a helper function that extracts a tarball compressed with gzip to a destination directory
+func extractTarGz(input io.Reader, dst string, dir bool, umask os.FileMode, fileSizeLimit int64, filesLimit int) error {
+	gzr, err := gzip.NewReader(input)
+	if err != nil {
+		return fmt.Errorf("failed to create gzip reader: %s", err)
+	}
+	defer gzr.Close()
+
+	return untar(gzr, dst, "", dir, umask, fileSizeLimit, filesLimit)
+}
 
 // untar is a helper function that untars a tarball to a destination directory
 func untar(input io.Reader, dst, src string, dir bool, umask os.FileMode, fileSizeLimit int64, filesLimit int) error {
@@ -66,11 +117,12 @@ func untar(input io.Reader, dst, src string, dir bool, umask os.FileMode, fileSi
 		fPath := dst
 
 		if dir {
-			if containsDotDot(header.Name) {
-				return fmt.Errorf("tar file (%s) would escape destination directory", header.Name)
+			if dir {
+				// if helpers.ContainsDotDot(header.Name) {
+				// 	return fmt.Errorf("tar file (%s) would escape destination directory", header.Name)
+				// }
+				fPath = filepath.Join(dst, header.Name) // nolint:gosec
 			}
-
-			fPath = filepath.Join(dst, header.Name) // nolint:gosec
 		}
 
 		fileInfo := header.FileInfo()
@@ -108,7 +160,7 @@ func untar(input io.Reader, dst, src string, dir bool, umask os.FileMode, fileSi
 
 		finished = true
 
-		err = copyReader(tarReader, fPath, umask, fileSizeLimit)
+		err = helpers.CopyReader(tarReader, fPath, umask, fileSizeLimit)
 		if err != nil {
 			return err
 		}
@@ -129,9 +181,6 @@ func untar(input io.Reader, dst, src string, dir bool, umask os.FileMode, fileSi
 	}
 
 	for _, dirHeader := range dirHeaders {
-		if containsDotDot(dirHeader.Name) {
-			return fmt.Errorf("tar file (%s) would escape destination directory", dirHeader.Name)
-		}
 		path := filepath.Join(dst, dirHeader.Name) // nolint:gosec
 		// Chmod the directory
 		if err := os.Chmod(path, dirHeader.FileInfo().Mode()); err != nil {
@@ -154,25 +203,6 @@ func untar(input io.Reader, dst, src string, dir bool, umask os.FileMode, fileSi
 	return nil
 }
 
-type TarExpander struct {
-	FileSizeLimit int64
-	FilesLimit    int
-}
-
-func (t *TarExpander) Expand(dst, src string, dir bool, umask os.FileMode) error {
-	if !dir {
-		err := os.MkdirAll(dst, umask)
-		return err
-	}
-
-	if err := os.MkdirAll(dst, 0755); err != nil {
-		return err
-	}
-
-	f, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return untar(f, dst, src, dir, umask, t.FileSizeLimit, t.FilesLimit)
+func init() {
+	expand.RegisterExpander(&TarExpander{})
 }
