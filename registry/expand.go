@@ -14,35 +14,17 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-package http
+package registry
 
 import (
-	"fmt"
-	"strings"
+	expander "github.com/enterprise-contract/go-gather/expand"
+	_ "github.com/enterprise-contract/go-gather/expand/bzip2"
+	_ "github.com/enterprise-contract/go-gather/expand/tar"
+	_ "github.com/enterprise-contract/go-gather/expand/zip"
+
+
 )
 
-type HTTPMetadata struct {
-	StatusCode    int
-	ContentLength int64
-	Destination   string
-	Headers       map[string][]string
-}
-
-func (m HTTPMetadata) Get() map[string]any {
-	return map[string]any{
-		"statusCode":    m.StatusCode,
-		"contentLength": m.ContentLength,
-		"destination":   m.Destination,
-		"headers":       m.Headers,
-	}
-}
-
-func (m HTTPMetadata) GetPinnedURL(u string) (string, error) {
-	if len(u) == 0 {
-		return "", fmt.Errorf("empty URL")
-	}
-	for _, scheme := range []string{"http://", "https://", "http::"} {
-		u = strings.TrimPrefix(u, scheme)
-	}
-	return "http::" + u, nil
+func GetExpander(extension string) (expander.Expander) {
+	return expander.GetExpander(extension)
 }
