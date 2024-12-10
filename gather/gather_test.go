@@ -18,134 +18,91 @@ package gather
 
 import (
 	"context"
-	"net/url"
-	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 
-	gogather "github.com/enterprise-contract/go-gather"
+	"github.com/stretchr/testify/assert"
+
 	"github.com/enterprise-contract/go-gather/metadata"
-	"github.com/enterprise-contract/go-gather/metadata/git"
 )
 
-func TestGather(t *testing.T) {
-	ctx := context.Background()
-	t.Run("SourceParseError", func(t *testing.T) {
-		source := ":"
-		destination := "/tmp/foo"
+type TestGatherer struct{}
 
-		_, err := Gather(ctx, source, destination)
-		if err == nil {
-			t.Error("expected an error, but got nil")
-		}
-
-		expectedErrorMessage := "unsupported source protocol: Unknown"
-		if err.Error() != expectedErrorMessage {
-			t.Errorf("expected error message: %s, but got: %s", expectedErrorMessage, err.Error())
-		}
-		t.Cleanup(func() {
-			os.RemoveAll(destination)
-		})
-	})
-
-	t.Run("UnsupportedProtocol", func(t *testing.T) {
-		source := "ftp://example.com/file.txt"
-		destination := "/tmp/foo"
-		defer os.RemoveAll(destination)
-
-		_, err := Gather(ctx, source, destination)
-		if err == nil {
-			t.Error("expected an error, but got nil")
-		}
-
-		expectedErrorMessage := "failed to classify source URI: unsupported protocol: ftp"
-		if err.Error() != expectedErrorMessage {
-			t.Errorf("expected error message: %s, but got: %s", expectedErrorMessage, err.Error())
-		}
-		t.Cleanup(func() {
-			os.RemoveAll(destination)
-		})
-	})
-
-	t.Run("SupportedProtocol_git", func(t *testing.T) {
-		source := "git::https://github.com/git-fixtures/basic.git"
-		destination := "/tmp/foo"
-		defer os.RemoveAll(destination)
-
-		_, err := Gather(ctx, source, destination)
-		if err != nil {
-			t.Errorf("expected no error, but got: %s", err.Error())
-		}
-		t.Cleanup(func() {
-			os.RemoveAll(destination)
-		})
-	})
-
-	t.Run("SupportedProtocol_file", func(t *testing.T) {
-		source := "file:///tmp/foo.txt"
-		destination := "file:///tmp/bar.txt"
-		src, _ := url.Parse(source)
-		dst, _ := url.Parse(destination)
-		_ = os.WriteFile(src.Path, []byte("hello world"), 0600)
-		defer os.RemoveAll(src.Path)
-		defer os.RemoveAll(dst.Path)
-
-		_, err := Gather(ctx, src.Path, destination)
-		if err != nil {
-			t.Errorf("expected no error, but got: %s", err.Error())
-		}
-		t.Cleanup(func() {
-			os.RemoveAll(destination)
-		})
-	})
-
-	t.Run("CustomGatherer", func(t *testing.T) {
-		source := "custom_source"
-		destination := "custom_destination"
-
-		gatherer := &mockGatherer{}
-		_, err := gatherer.Gather(ctx, source, destination)
-		if err != nil {
-			t.Errorf("expected no error, but got: %s", err.Error())
-		}
-		t.Cleanup(func() {
-			os.RemoveAll(destination)
-		})
-	})
+func (t *TestGatherer) Gather(ctx context.Context, src, dst string) (metadata.Metadata, error) {
+	return nil, nil
+}
+func (t *TestGatherer) Matcher(uri string) bool {
+	return strings.HasPrefix(uri, "test://")
 }
 
-type mockGatherer struct{}
+type TestGathererA struct{}
 
-func (m *mockGatherer) Gather(ctx context.Context, source, destination string) (metadata.Metadata, error) {
-	// Mock implementation
-	return &git.GitMetadata{}, nil
+func (t *TestGathererA) Gather(ctx context.Context, src, dst string) (metadata.Metadata, error) {
+	return nil, nil
 }
-func TestExpandTilde(t *testing.T) {
-	homeDir, _ := os.UserHomeDir()
+func (t *TestGathererA) Matcher(uri string) bool {
+	return strings.HasPrefix(uri, "testA://")
+}
 
-	t.Run("NoTilde", func(t *testing.T) {
-		path := "/path/to/file"
-		expandedPath := gogather.ExpandTilde(path)
-		if expandedPath != path {
-			t.Errorf("expected expanded path: %s, but got: %s", path, expandedPath)
-		}
-	})
+type TestGathererB struct{}
 
-	t.Run("WithTilde", func(t *testing.T) {
-		path := "~/path/to/file"
-		expectedPath := filepath.Join(homeDir, "path/to/file")
-		expandedPath := gogather.ExpandTilde(path)
-		if expandedPath != expectedPath {
-			t.Errorf("expected expanded path: %s, but got: %s", expectedPath, expandedPath)
-		}
-	})
+func (t *TestGathererB) Gather(ctx context.Context, src, dst string) (metadata.Metadata, error) {
+	return nil, nil
+}
+func (t *TestGathererB) Matcher(uri string) bool {
+	return strings.HasPrefix(uri, "testB://")
+}
 
-	t.Run("WithTildeSlash", func(t *testing.T) {
-		path := "~/path/to/file/"
-		expectedPath := filepath.Join(homeDir, "path/to/file/")
-		expandedPath := gogather.ExpandTilde(path)
-		if expandedPath != expectedPath {
-			t.Errorf("expected expanded path: %s, but got: %s", expectedPath, expandedPath)
-		}
-	})
+func TestRegisterGatherer(t *testing.T) {
+	scheme := "test://"
+	RegisterGatherer(&TestGatherer{})
+
+	gatherer, err := GetGatherer(scheme)
+	if err != nil {
+		t.Fatalf("expected gatherer to be registered, got error: %v", err)
+	}
+
+	if _, ok := gatherer.(*TestGatherer); !ok {
+		t.Fatalf("expected gatherer of type *TestGatherer, got %T", gatherer)
+	}
+}
+
+func TestRegisterMultipleGatherers(t *testing.T) {
+	// Register multiple gatherers
+	RegisterGatherer(&TestGathererA{})
+	RegisterGatherer(&TestGathererB{})
+
+	// Retrieve and validate each gatherer
+	gathererA, err := GetGatherer("testA://")
+	if err != nil {
+		t.Fatalf("expected gathererA to be registered, got error: %v", err)
+	}
+	if _, ok := gathererA.(*TestGathererA); !ok {
+		t.Fatalf("expected gatherer of type *TestGathererA, got %T", gathererA)
+	}
+
+	gathererB, err := GetGatherer("testB://")
+	if err != nil {
+		t.Fatalf("expected gathererB to be registered, got error: %v", err)
+	}
+	if _, ok := gathererB.(*TestGathererB); !ok {
+		t.Fatalf("expected gatherer of type *TestGathererB, got %T", gathererB)
+	}
+}
+
+func TestGetGatherer(t *testing.T) {
+	RegisterGatherer(&TestGatherer{})
+	gatherer, err := GetGatherer("test://")
+	assert.NoError(t, err)
+	assert.NotNil(t, gatherer)
+	assert.IsType(t, &TestGatherer{}, gatherer)
+}
+
+func TestGetGathererError(t *testing.T) {
+	RegisterGatherer(&TestGathererA{})
+	RegisterGatherer(&TestGathererB{})
+
+	_, err := GetGatherer("invalid://")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no gatherer found for URI: invalid://")
 }

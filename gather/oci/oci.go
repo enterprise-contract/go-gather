@@ -14,10 +14,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Package oci provides functionality for gathering files or directories from OCI (Open Container Initiative) sources.
-// It includes an implementation of the Gatherer interface, OCIGatherer, which allows copying files or directories from an OCI source to a destination path.
-// The Gather method in OCIGatherer takes a source path and a destination path, and returns the metadata of the gathered file or directory and any error encountered.
-// This package also includes a helper function, ociURLParse, for parsing the source URI.
 package oci
 
 import (
@@ -26,29 +22,39 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content/file"
 	"oras.land/oras-go/v2/registry"
 	"oras.land/oras-go/v2/registry/remote"
 
-	r "github.com/enterprise-contract/go-gather/gather/oci/internal/registry"
+	"github.com/enterprise-contract/go-gather/gather"
+	r "github.com/enterprise-contract/go-gather/internal/oci/registry"
 	"github.com/enterprise-contract/go-gather/metadata"
-	"github.com/enterprise-contract/go-gather/metadata/oci"
 )
+
+type OCIGatherer struct {
+	OCIMetadata
+}
+
+type OCIMetadata struct {
+	Path      string
+	Digest    string
+	Timestamp string
+}
 
 var Transport http.RoundTripper = http.DefaultTransport
 
 var orasCopy = oras.Copy
 
-// OCIGatherer is a struct that implements the Gatherer interface
-// and provides methods for gathering from OCI.
-type OCIGatherer struct{}
+func (o *OCIGatherer) Gather(ctx context.Context, source, dst string) (metadata.Metadata, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
 
-// Gather copies a file or directory from the source path to the destination path.
-// It returns the metadata of the gathered file or directory and any error encountered.
-// Portions of this file are derivative from the open-policy-agent/conftest project.
-func (f *OCIGatherer) Gather(ctx context.Context, source, destination string) (metadata.Metadata, error) {
 	if strings.Contains(source, "localhost") {
 		source = strings.ReplaceAll(source, "localhost", "127.0.0.1")
 	}
@@ -80,12 +86,12 @@ func (f *OCIGatherer) Gather(ctx context.Context, source, destination string) (m
 	}
 
 	// Create the destination directory
-	if err := os.MkdirAll(destination, os.ModePerm); err != nil {
+	if err := os.MkdirAll(dst, os.ModePerm); err != nil {
 		return nil, fmt.Errorf("failed to create directory: %w", err)
 	}
 
 	// Create the file store
-	fileStore, err := file.New(destination)
+	fileStore, err := file.New(dst)
 	if err != nil {
 		return nil, fmt.Errorf("file store: %w", err)
 	}
@@ -97,7 +103,29 @@ func (f *OCIGatherer) Gather(ctx context.Context, source, destination string) (m
 		return nil, fmt.Errorf("pulling policy: %w", err)
 	}
 
-	return &oci.OCIMetadata{Digest: a.Digest.String()}, nil
+	o.Digest = a.Digest.String()
+	o.Path = dst
+	o.Timestamp = time.Now().Format(time.RFC3339)
+
+	return &o.OCIMetadata, nil
+}
+
+func (o *OCIGatherer) Matcher(uri string) bool {
+	prefixes := []string{"oci://", "oci::"}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(uri, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (o *OCIMetadata) Get() interface{} {
+	return o
+}
+
+func (o *OCIMetadata) GetDigest() string {
+	return o.Digest
 }
 
 func ociURLParse(source string) string {
@@ -110,4 +138,8 @@ func ociURLParse(source string) string {
 		src = scheme
 	}
 	return src
+}
+
+func init() {
+	gather.RegisterGatherer(&OCIGatherer{})
 }
