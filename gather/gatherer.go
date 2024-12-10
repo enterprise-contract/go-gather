@@ -14,35 +14,31 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-package http
+package gather
 
 import (
+	"context"
 	"fmt"
-	"strings"
+
+	"github.com/enterprise-contract/go-gather/metadata"
 )
 
-type HTTPMetadata struct {
-	StatusCode    int
-	ContentLength int64
-	Destination   string
-	Headers       map[string][]string
+type Gatherer interface {
+	Gather(ctx context.Context, src, dst string) (metadata.Metadata, error)
+	Matcher(uri string) bool
 }
 
-func (m HTTPMetadata) Get() map[string]any {
-	return map[string]any{
-		"statusCode":    m.StatusCode,
-		"contentLength": m.ContentLength,
-		"destination":   m.Destination,
-		"headers":       m.Headers,
+var gatherers []Gatherer
+
+func GetGatherer(uri string) (Gatherer, error) {
+	for _, gatherer := range gatherers {
+		if gatherer.Matcher(uri) {
+			return gatherer, nil
+		}
 	}
+	return nil, fmt.Errorf("no gatherer found for URI: %s", uri)
 }
 
-func (m HTTPMetadata) GetPinnedURL(u string) (string, error) {
-	if len(u) == 0 {
-		return "", fmt.Errorf("empty URL")
-	}
-	for _, scheme := range []string{"http://", "https://", "http::"} {
-		u = strings.TrimPrefix(u, scheme)
-	}
-	return "http::" + u, nil
+func RegisterGatherer(g Gatherer) {
+	gatherers = append(gatherers, g)
 }

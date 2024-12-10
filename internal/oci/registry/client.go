@@ -25,7 +25,7 @@ import (
 	"oras.land/oras-go/v2/registry/remote/credentials"
 	"oras.land/oras-go/v2/registry/remote/retry"
 
-	"github.com/enterprise-contract/go-gather/gather/oci/internal/network"
+	"github.com/enterprise-contract/go-gather/internal/oci/network"
 )
 
 /* This code is sourced from the open-policy-agent/conftest project. */
