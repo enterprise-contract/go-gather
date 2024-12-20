@@ -34,8 +34,10 @@ func SetupClient(repository *remote.Repository, transport http.RoundTripper) err
 	registry := repository.Reference.Host()
 
 	// If `--tls=false` was provided or accessing the registry via loopback with
-	// `--tls` flag was not provided
-	if !viper.GetBool("tls") || (network.IsLoopback(network.Hostname(registry)) && !viper.IsSet("tls")) {
+	// `--tls` flag was not set to true
+	forceTLS := viper.IsSet("tls") && viper.GetBool("tls")
+	forcePlain := viper.IsSet("tls") && !viper.GetBool("tls")
+	if forcePlain || (network.IsLoopback(network.Hostname(registry)) && !forceTLS) {
 		// Docker by default accesses localhost using plaintext HTTP
 		repository.PlainHTTP = true
 	}

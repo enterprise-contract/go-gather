@@ -23,21 +23,23 @@ import (
 
 /* This code is sourced from the open-policy-agent/conftest project. */
 func Hostname(ref string) string {
-	ref = strings.TrimPrefix(ref, "oci://")
-
-	colon := strings.Index(ref, ":")
-	slash := strings.Index(ref, "/")
-
-	cut := colon
-	if colon == -1 || (colon > slash && slash != -1) {
-		cut = slash
-	}
-
-	if cut < 0 {
+	if ref == "" {
 		return ref
 	}
 
-	return ref[0:cut]
+	ref = strings.TrimPrefix(ref, "oci://")
+
+	slash := strings.IndexByte(ref, '/')
+	if slash > 0 {
+		ref = ref[0:slash]
+	}
+
+	host, _, err := net.SplitHostPort(ref)
+	if err == nil {
+		return host
+	}
+
+	return ref
 }
 
 func IsLoopback(host string) bool {
